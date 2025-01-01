@@ -1,14 +1,13 @@
-''' Compile-time configuration data IO '''
 import json
-from typing import Optional, Dict, Any
+from typing import Optional, Any, LiteralString
 from os import path, mkdir
 from re import sub, compile, Pattern
 from functools import cached_property
 from configparser import ConfigParser, ParsingError
-from warnings import deprecated
-from langchain_core.messages import SystemMessage, AIMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate, SystemMessagePromptTemplate, HumanMessagePromptTemplate, AIMessagePromptTemplate
 from logging import getLogger, warning
+from logging import _nameToLevel
+from logging.config import dictConfig
 
 from langchain_pairtranslation.document_analysis import DocumentTerms
 
@@ -19,10 +18,11 @@ CHUNK_PATTERNS_H = "Regex Chunk Patterns"
 FILEPATHS_H = "General Filepaths"
 USER_SETTINGS_TEMPLATE_H = "User Settings > Template Parameters"
 
-def create_default_config_dict() -> Dict[str, Dict[str, Any]]:
+def create_default_config_dict() -> dict[str, dict[str, Any]]:
     return {
             CHUNK_SETTINGS_H : {
-                'int_MinLength' : 24
+                'int_MinLength' : 64,
+                'int_MaxLength' : 512,
             },
             CHUNK_PATTERNS_H : {
                 'Empty_Line'  : r"^\s*$",
@@ -30,16 +30,16 @@ def create_default_config_dict() -> Dict[str, Dict[str, Any]]:
                 'Triple_X'    : r"×\s+×\s+×"
             },
             FILEPATHS_H : {
-                'Logging'               : "",#"__logs__/debug.log",
-                'TranslatorSystemPrompt': "",#"config/prompts/translator_system_prompt.txt"
+                'TranslatorSystemPrompt': "config/prompts/translator_system_prompt.txt"
             },
             USER_SETTINGS_TEMPLATE_H : {
                 'SourceLanguage': DEFAULT_SOURCE_TARGET[0],
-                'TargetLanguage': DEFAULT_SOURCE_TARGET[1]
+                'TargetLanguage': DEFAULT_SOURCE_TARGET[1],
+                'WindowSize'    : '1280x960'
             }
         }
 
-logger = getLogger(__name__)
+logger = getLogger("config")
 
 class LoadConfigError(Exception):
     ''' Raised when you fail to load config info. '''
@@ -135,19 +135,19 @@ class Config:
             template_file=self._config_dict[FILEPATHS_H]['TranslatorSystemPrompt'],
             input_variables=list(self._config_dict[USER_SETTINGS_TEMPLATE_H].keys()))
     
-    @property
-    @deprecated("Make terms set / get during runtime not config")
-    def terms(self) -> DocumentTerms:
-        with open('config/terms.json', 'r') as file:
-            return DocumentTerms.model_validate_json(file.read())
+    # @property
+    # @deprecated("Make terms set / get during runtime not config")
+    # def terms(self) -> DocumentTerms:
+    #     with open('config/terms.json', 'r') as file:
+    #         return DocumentTerms.model_validate_json(file.read())
 
-    @terms.setter
-    def terms(self, value: DocumentTerms):
-        with open('config/terms.json', 'w') as file:
-            file.write(value.model_dump_json())
+    # @terms.setter
+    # def terms(self, value: DocumentTerms):
+    #     with open('config/terms.json', 'w') as file:
+    #         file.write(value.model_dump_json())
 
     @property
-    def translator_format_kwargs(self) -> Dict[str, str]:
+    def translator_format_kwargs(self) -> dict[str, str]:
         return self._config_dict[USER_SETTINGS_TEMPLATE_H]
 
     @property
@@ -155,6 +155,11 @@ class Config:
         ''' The unified regex pattern that can be searched for to find a chunk division. '''
         return compile('(' + '|'.join([pattern for (key, pattern) in self._config_dict[CHUNK_PATTERNS_H].items() if not key.startswith('#')]) + ')')
     
+    @property
+    def window_size(self) -> str:
+        ''' The size of the main window. '''
+        return self._config_dict[USER_SETTINGS_TEMPLATE_H]['WindowSize']
+
     @property
     def source_language(self) -> str:
         ''' Document source language '''

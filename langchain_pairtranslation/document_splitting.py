@@ -1,29 +1,28 @@
 from enum import Enum
 from functools import cached_property
-from typing import Annotated, Callable, Iterator, List, Optional, Tuple, Union
-from warnings import deprecated
+from typing import Annotated, Callable, Iterator
 import annotated_types
 import docx
 import docx.document
-import docx.types
+import logging
 from frozenlist import FrozenList
 from pydantic import BaseModel, Field, PositiveInt
 import re
 from functools import total_ordering
-
 UnsignedInt = Annotated[int, annotated_types.Ge(0)]
 
 import langchain_pairtranslation.string_extensions as string
+
+log = logging.getLogger("app")
 
 @total_ordering #TODO: Don't use total_ordering, it's reportedly slower than implementing the rest
 class RowCol(BaseModel):
     """
     ### Summary
-    Document Terms are source-to-translation mappings with added description for context details.
+    A row and column pair representing a position in a document.
     ### Attributes
-        1. source : str
-        2. translations : List{str}
-        3. description : Optional{str}
+        1. row : PositiveInt
+        2. column : PositiveInt
     """
     row: PositiveInt = Field(default=0)
     column: PositiveInt = Field(default=0)
@@ -57,7 +56,7 @@ class RowCol(BaseModel):
     def dot_str(self) -> str:
         return f'{self.row}.{self.column}'
     
-    def to_tuple(self, zero_indexed = False) -> Tuple[int, int]:
+    def to_tuple(self, zero_indexed = False) -> tuple[int, int]:
         if zero_indexed:
             return self.row - 1, self.column
         return self.row, self.column
@@ -311,13 +310,14 @@ class DocxChunk(BaseModel):
 
 class DocxChunks(BaseModel):
     """
-    A series of DocumentChunks drawing from a docx.Document object.
+    A series of DocxChunks drawing from a docx.Document object.
     """
+    # Public fields
     doc_path: str = Field(
         description="The filepath of the source docx.",
         frozen=True
     )
-    chunks_: List[DocxChunk] = Field(
+    chunks_: list[DocxChunk] = Field(
         description="The internal collection of document chunks.",
         alias='chunks',
         frozen=True,
@@ -327,6 +327,12 @@ class DocxChunks(BaseModel):
         description="The position from which the next created chunk should be created",
         default=RowCol.zero()
     )
+
+    @staticmethod
+    def load_from_document_path(doc_path: str):
+        doc = docx.Document(doc_path)
+        
+        return DocxChunks(doc_path=doc_path)
 
     @cached_property
     def _doc(self) -> docx.document.Document:
@@ -361,7 +367,7 @@ class DocxChunks(BaseModel):
             self.collection.append(created)
             
     @staticmethod #source_getter: Callable[..., docx.document.Document]
-    def create_chunk_with_start(start: RowCol, source) -> Tuple[DocxChunk, RowCol]:
+    def create_chunk_with_start(start: RowCol, source) -> tuple[DocxChunk, RowCol]:
         chunk = DocxChunk(start=start, end=start)
         print("Created chunk at ", start)
         chunk.set_src(source)

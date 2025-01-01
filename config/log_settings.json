@@ -1,0 +1,48 @@
+{
+    "version": 1,
+    "disable_existing_loggers": false,
+    "formatters": {
+        "simple": {
+            "format": "[%(levelname)s] %(message)s"
+        },
+        "detailed": {
+            "format": "[%(levelname)-8s %(name)-8s L%(lineno)d][%(asctime)s] %(message)s",
+            "datefmt": "%Y-%m-%dT%H:%M:%Sz"
+        }
+    },
+    "handlers": {
+        "console": {
+            "level": "INFO",
+            "class": "logging.StreamHandler",
+            "formatter": "simple"
+        },
+        "file_app": {
+            "level": "DEBUG",
+            "class": "logging.handlers.RotatingFileHandler",
+            "formatter": "detailed",
+            "filename": "__logs__/app.log",
+            "maxBytes": 10485760,
+            "backupCount": 20,
+            "encoding": "utf8"
+        },
+        "file_test": {
+            "level": "DEBUG",
+            "class": "logging.handlers.RotatingFileHandler",
+            "formatter": "detailed",
+            "filename": "__logs__/tests.log",
+            "maxBytes": 10485760,
+            "backupCount": 20,
+            "encoding": "utf8"
+        }
+    },
+    "loggers": {
+        "app": {
+            "handlers": ["console", "file_app"],
+            "level": "DEBUG"
+        },
+        "tests": {
+            "handlers": ["console", "file_test"],
+            "level": "DEBUG"
+        }
+    }
+}
