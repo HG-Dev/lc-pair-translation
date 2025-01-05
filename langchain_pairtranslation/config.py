@@ -1,202 +1,163 @@
-import json
-from typing import Optional, Any, LiteralString
-from os import path, mkdir
-from re import sub, compile, Pattern
+from enum import Enum, Flag, auto
 from functools import cached_property
-from configparser import ConfigParser, ParsingError
-from langchain_core.prompts import ChatPromptTemplate, SystemMessagePromptTemplate, HumanMessagePromptTemplate, AIMessagePromptTemplate
-from logging import getLogger, warning
-from logging import _nameToLevel
-from logging.config import dictConfig
+import re
+from pydantic import BaseModel, PositiveInt
+from os.path import exists
 
-from langchain_pairtranslation.document_analysis import DocumentTerms
-
-DEFAULT_SOURCE_TARGET = ("Japanese", "English")
-
-CHUNK_SETTINGS_H = "Chunk Settings"
-CHUNK_PATTERNS_H = "Regex Chunk Patterns"
-FILEPATHS_H = "General Filepaths"
-USER_SETTINGS_TEMPLATE_H = "User Settings > Template Parameters"
-
-def create_default_config_dict() -> dict[str, dict[str, Any]]:
-    return {
-            CHUNK_SETTINGS_H : {
-                'int_MinLength' : 64,
-                'int_MaxLength' : 512,
-            },
-            CHUNK_PATTERNS_H : {
-                'Empty_Line'  : r"^\s*$",
-                'Maru'        : r"^〇",
-                'Triple_X'    : r"×\s+×\s+×"
-            },
-            FILEPATHS_H : {
-                'TranslatorSystemPrompt': "config/prompts/translator_system_prompt.txt"
-            },
-            USER_SETTINGS_TEMPLATE_H : {
-                'SourceLanguage': DEFAULT_SOURCE_TARGET[0],
-                'TargetLanguage': DEFAULT_SOURCE_TARGET[1],
-                'WindowSize'    : '1280x960'
-            }
-        }
-
-logger = getLogger("config")
-
-class LoadConfigError(Exception):
-    ''' Raised when you fail to load config info. '''
-    pass
-
-class Config:
+class SplitBehavior(Flag):
     """
     ### Description
-    Regenerative .ini config file interpretation
-    ### Parameters
-    1. ini_filepath : str
-            * The filepath for the configuration file. If you do not supply this, 
-              default settings will be used, and any changes made will be lost.
+    Enum for the behavior of a split pattern, specifically whether or not the matched pattern
+    should be included in the output, and if so, on which side of the split.
+        * INCLUDE_LEFT:  The matched pattern is included in the left chunk. 
+        * INCLUDE_RIGHT: The matched pattern is included in the right chunk.
+        * EXCLUDE:       The matched pattern is excluded from chunks.
     """
-    def __init__(self, ini_filepath: Optional[str] = None):
+    EXCLUDE = auto()
+    INCLUDE_LEFT = auto()
+    INCLUDE_RIGHT = auto()
+    INCLUDE_BOTH = INCLUDE_LEFT | INCLUDE_RIGHT
 
-        self.ini_filepath = ini_filepath
+class ReplaceBehavior(Enum):
+    """
+    ### Description
+    Enum for the behavior of a replacement pattern.
+        * IMMEDIATE: The replacement pattern is applied immediately.
+                     The user and LLM will see the same text.
+        * ON_SUBMIT: The replacement pattern is applied when the chunk is submitted for translation.
+                     Only the LLM will see the post-processed text. This is useful for trimming text that is less useful to the LLM than the user.
+        * ON_EXPORT: The replacement pattern is applied when the translation is exported to a new document.
+                     This is useful for performing replacements on the final document that are not necessary for the LLM or user to see.
+    """
+    IMMEDIATE = "immediate"
+    ON_SUBMIT = "on_submit"
+    ON_EXPORT = "on_export"
 
-        # Attempt to load config file from given filepath
-        self.config = ConfigParser(allow_no_value=True)
-        if self.ini_filepath:
-            file_ext = path.splitext(self.ini_filepath)[-1]
-            if not file_ext:
-                logger.warning("For clarity's sake, ensure the specified .ini file name ({}) includes its file extension.".format(self.ini_filepath))
-                self.ini_filepath += ".ini"
-            elif file_ext != ".ini":
-                raise LoadConfigError("TweetFeeder config file should be of .ini type.")
-            if path.exists(self.ini_filepath):
-                try:
-                    assert path.isfile(self.ini_filepath)
-                    self.config.read(self.ini_filepath)          
-                except (AssertionError, ParsingError) as e:
-                    raise LoadConfigError("Error parsing config ({}).".format(self.ini_filepath))
-            else:
-                logger.warning("No config file at given filepath ({}). It will be created.".format(self.ini_filepath))
-        
-        # Internal dictionary that represents the config file's sections, options, and default values
-        # All string values can be called safely from this dictionary
-        self._config_dict = create_default_config_dict()
-        assert(FILEPATHS_H in self._config_dict)
+CAPTURE_LEFT = re.compile(r'^\(.*?\)')
+CAPTURE_RIGHT = re.compile(r'.*?\(.*?\)$')
 
-        # Where existing settings are found, overwrite items in _config_dict
-        self._load_settings_ini()
+class SplitPattern(BaseModel):
+    """
+    ### Description
+    A regex pattern for splitting chunks into smaller chunks.
+    Capture groups flush with the start of the pattern will be included in the left chunk,
+        while capture groups flush with the end of the pattern will be included in the right chunk.
+    ### Attributes
+    1. name : str
+            * The name of the pattern.
+    2. pattern : str
+            * The regex pattern.
+    """
+    name: str
+    pattern_src: str
 
-        # Check filepaths before proceeding
-        path_errors = self.verify_paths()
-        if path_errors:
-            raise LoadConfigError("The following paths failed verification: " + str(path_errors))
-
-        # Save config file, adding missing options or sections
-        if ini_filepath:
-            self._save_settings_ini()
-
-    def _load_settings_ini(self):
-        # Iterate over internal dictionary to both update self.values and generate config file
-        for section, option_dict in self._config_dict.items():
-            # Ensure sections
-            if not self.config.has_section(section):
-                self.config.add_section(section)
-            # Ensure options or read options
-            for option, value in option_dict.items():
-                if not self.config.has_option(section, option):
-                    self.config.set(section, option, str(value))
-                else:
-                    match option.split('_')[0]:
-                        case 'int':     self._config_dict[section][option] = self.config.getint(section, option)
-                        case 'float':   self._config_dict[section][option] = self.config.getfloat(section, option)
-                        case 'bool':    self._config_dict[section][option] = self.config.getboolean(section, option)
-                        case _:         self._config_dict[section][option] = self.config.get(section, option)
-
-    def _save_settings_ini(self):
-        if not self.ini_filepath:
-            logger.warning("No configuration filename was given. Changes to settings will not be saved.")
-            return
-        with open(self.ini_filepath, 'w') as configfile:
-            self.config.write(configfile)
-
-    @property
-    def log_filepath(self):
-        ''' Return filepath to the log. '''
-        return self._config_dict[FILEPATHS_H]['log']
-
-    @property
-    def min_chunk_length(self):
-        ''' The minimum number of characters required to exist in the chunk buffer before a chunk is registered. '''
-        value = self._config_dict[CHUNK_SETTINGS_H]['int_MinLength']
-        assert(isinstance(value, int))
-        return value
-    
     @cached_property
-    def translator_base_system_prompt(self) -> SystemMessagePromptTemplate:
-        return SystemMessagePromptTemplate.from_template_file(
-            template_file=self._config_dict[FILEPATHS_H]['TranslatorSystemPrompt'],
-            input_variables=list(self._config_dict[USER_SETTINGS_TEMPLATE_H].keys()))
+    def pattern(self) -> re.Pattern:
+        return re.compile(self.pattern_src)
     
-    # @property
-    # @deprecated("Make terms set / get during runtime not config")
-    # def terms(self) -> DocumentTerms:
-    #     with open('config/terms.json', 'r') as file:
-    #         return DocumentTerms.model_validate_json(file.read())
+    # TODO Consider determining behavior from returned matches -- this would allow for more complex patterns
+    @cached_property
+    def behavior(self):
+        """
+        Capture groups in split patterns can be used to determine whether
+        portions of the matched text should be included in the left or right chunks.
+        """
+        # Check for capture groups at the start and end of the pattern
+        include_left = bool(CAPTURE_LEFT.match(self.pattern_src))
+        include_right = bool(CAPTURE_RIGHT.match(self.pattern_src))
+        
+        if include_left and include_right:
+                return SplitBehavior.INCLUDE_BOTH
+        elif include_left:
+                return SplitBehavior.INCLUDE_LEFT
+        elif include_right:
+                return SplitBehavior.INCLUDE_RIGHT
+        else:
+                return SplitBehavior.EXCLUDE
+            
 
-    # @terms.setter
-    # def terms(self, value: DocumentTerms):
-    #     with open('config/terms.json', 'w') as file:
-    #         file.write(value.model_dump_json())
+class ReplacePattern(BaseModel):
+    """
+    ### Description
+    A regex pattern for replacing text within a chunk.
+    This could be used to remove or preformat a chunk before it is sent to the translator.
+    ### Attributes
+    1. name : str
+            * The name of the pattern.
+    2. pattern : str
+            * The regex pattern.
+    3. replacement : str | None
+            * The replacement string. If this is not supplied, the pattern match will be removed.
+    4. behavior : ReplaceBehavior
+            * The behavior of the replacement pattern.
+    """
+    name: str
+    pattern_src: str
+    replacement: str | None
+    behavior: ReplaceBehavior = ReplaceBehavior.IMMEDIATE
 
-    @property
-    def translator_format_kwargs(self) -> dict[str, str]:
-        return self._config_dict[USER_SETTINGS_TEMPLATE_H]
+    @cached_property
+    def pattern(self):
+        return re.compile(self.pattern_src)
 
-    @property
-    def current_chunk_divider_regex(self) -> Pattern:
-        ''' The unified regex pattern that can be searched for to find a chunk division. '''
-        return compile('(' + '|'.join([pattern for (key, pattern) in self._config_dict[CHUNK_PATTERNS_H].items() if not key.startswith('#')]) + ')')
-    
-    @property
-    def window_size(self) -> str:
-        ''' The size of the main window. '''
-        return self._config_dict[USER_SETTINGS_TEMPLATE_H]['WindowSize']
+class ChunkingSettings(BaseModel):
+    """
+    ### Description
+    Settings for chunking text into segments.
+    ### Attributes
+    1. int_MinLength : int
+            * The minimum length of a chunk.
+    2. int_MaxLength : int
+            * The maximum length of a chunk. This should be constrained to prevent LLMs from generating too much text at once.
+    3. split_patterns : list[SplitPattern]
+            * A list of regex patterns for splitting text into segments. Priority is given to patterns earlier in the list.
+    """
+    min_length: PositiveInt = 64
+    max_length: PositiveInt = 512
+    split_patterns: list[SplitPattern] = [
+        # PRIMARY SPLIT PATTERNS - Guaranteed to be semantically meaningful.
+        SplitPattern(name="Blank Space", pattern_src=r'^\s*$'),
+        SplitPattern(name="Manuscript Scene Header Maru", pattern_src=r'^(〇)'),
+        SplitPattern(name="Manuscript Subscene Break", pattern_src=r'^\s*×\s+×\s+×\s*$'),
+        # SECONDARY SPLIT PATTERNS
+        SplitPattern(name="End of sentence (en/jp)", pattern_src=r'([.!?。！？…]+)[^A-z0-9."]'),
+    ]
 
-    @property
-    def source_language(self) -> str:
-        ''' Document source language '''
-        value = self._config_dict[USER_SETTINGS_TEMPLATE_H]['SourceLanguage']
-        return value
-    
-    @source_language.setter
-    def source_language(self, value: str):
-        ''' Set and save document source language '''
-        self._config_dict[USER_SETTINGS_TEMPLATE_H]['SourceLanguage'] = value
-        self._save_settings_ini()
+class UserSettings(BaseModel):
+    """
+    ### Description
+    User settings for the application.
+    ### Attributes
+    1. source_language : str
+            * The source language of the document.
+    2. target_language : str
+            * The target language of the document.
+    3. window_size : str
+            * The size of the main window.
+    """
+    known_languages: list[str] = ["Japanese", "English"]
+    source_language: str = "Japanese"
+    target_language: str = "English"
+    window_size: str = '1280x960'
 
-    @property
-    def target_language(self) -> str:
-        ''' Document target language '''
-        value = self._config_dict[USER_SETTINGS_TEMPLATE_H]["TargetLanguage"]
-        return value
-    
-    @target_language.setter
-    def target_language(self, value: str):
-        ''' Set and save the document target language '''
-        self._config_dict[USER_SETTINGS_TEMPLATE_H]['TargetLanguage'] = value
-        self._save_settings_ini()
+class Config(BaseModel):
+    """
+    ### Description
+    Root configuration model for the application.
+    """
+    chunking: ChunkingSettings = ChunkingSettings()
+    user: UserSettings = UserSettings()
 
-    def verify_paths(self):
-        ''' Ensures that the paths given for feed/stats files can be used. '''
-        problems = set()
-        if FILEPATHS_H not in self._config_dict:
-            return f"{FILEPATHS_H}: {KeyError("File paths category not found in config dict")}"
-        for name, filepath in self._config_dict[FILEPATHS_H].items():
-            if filepath and filepath.strip() != '':
-                # If the file has yet to be created, ensure it can be written to
-                if not path.exists(path.dirname(filepath)):
-                    try:
-                        mkdir(filepath)
-                    except OSError as e:                  
-                        problems.add(path.dirname(filepath) + ": " + str(e))
-            else:
-                problems.add(f"{name}: {KeyError("No filepath given")}")
-        return problems
+    @staticmethod
+    def load(path: str) -> 'Config':
+        if not exists(path):
+            default = Config()
+            default.save(path)
+            return default
+        
+        with open(path, 'r') as file:
+            return Config.model_validate_json(file.read())
+        
+    def save(self, path: str):
+        with open(path, 'w') as file:
+            file.write(self.model_dump_json())

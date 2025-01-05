@@ -25,4 +25,5 @@ if __name__ == '__main__':
         dictConfig(log_settings)
 
     # Run the application
+    getLogger('app').info("Application started.")
     run('config/app_settings.ini')

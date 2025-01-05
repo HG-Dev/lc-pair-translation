@@ -10,7 +10,7 @@ import re
 
 UnsignedInt = Annotated[int, annotated_types.Ge(0)]
 
-import langchain_pairtranslation.string_extensions as string
+import langchain_pairtranslation.utils.string_extensions as string
 logger = getLogger("__main__")
 
 class DocumentTerm(BaseModel):

@@ -3,8 +3,8 @@ from tkinter.constants import *
 from customtkinter.windows.widgets.theme import ThemeManager
 from customtkinter.windows.widgets.utility import check_kwargs_empty, pop_from_dict_by_set
 
-from langchain_pairtranslation.document_splitting import DocxChunk
-from .document_splitting import RowCol
+from .chunking.base import DocumentChunk
+from .rowinfo import RowCol
 import customtkinter as ctk
 import tkinter as tk
 import re
@@ -312,7 +312,7 @@ class ChunkFrame(ctk.CTkFrame):
     fontsize = ThemeManager.theme["CTkFont"]["size"]
     status_colors = ["red", "blue", "cyan", "green"]
 
-    def __init__(self, master, chunk: DocxChunk):
+    def __init__(self, master, chunk: Any):
         super().__init__(master)
         self.grid_columnconfigure(0, weight=0, minsize=32)
         self.grid_columnconfigure(1, weight=1, minsize=550)
@@ -325,7 +325,7 @@ class ChunkFrame(ctk.CTkFrame):
             print("Chunk recieved by ChunkFrame is missing its src link!")
             return
         
-        start = chunk.start
+        start = chunk.start_rowcol
         total_rows = chunk.ref_paragraph_count + 2
 
         self.src_textbox = StaticTextbox(self, '\n'.join(chunk.src_text_substrings), height=0)
@@ -381,7 +381,7 @@ class ChunkedTranslationFrame(ctk.CTkScrollableFrame):
     
     # Chunk text, start in original document, end in original document
     # TODO: These are static! Move them into __init__
-    _chunks: list[DocxChunk] = []
+    _chunks: list[Any] = []
     _is_updating: bool = False
     _chunk_frames: list[ChunkFrame] = []            
 
@@ -424,7 +424,7 @@ class ChunkedTranslationFrame(ctk.CTkScrollableFrame):
         assert(len(self._chunks) > len(self._chunk_frames))
         self.after(100, self._add_chunk_loop_internal)
 
-    def add_chunk(self, chunk: DocxChunk):
+    def add_chunk(self, chunk: Any):
         self._chunks.append(chunk)
 
         if not self._is_updating:

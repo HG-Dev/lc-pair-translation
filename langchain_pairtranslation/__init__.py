@@ -9,16 +9,16 @@ import asyncio
 from langchain_pairtranslation.customtkinter_extensions import *
 from langchain_pairtranslation.document_analysis import *
 from langchain_pairtranslation.llms import BaseLLMProvider
-import langchain_pairtranslation.string_extensions as string
+import langchain_pairtranslation.utils.string_extensions as string
 #from langchain_pairtranslation._internal import MyLLMProvider
-from langchain_pairtranslation.config import Config
-from langchain_pairtranslation.document_splitting import DocxChunks, DocxChunk
-from langchain_pairtranslation.config import Config
+from langchain_pairtranslation.chunking.base import DocumentChunk
+from langchain_pairtranslation.chunking.docx import DocxChunks
+from langchain_pairtranslation.config_old import ConfigOld
 
-config: Config = Config(None)
+config: ConfigOld = ConfigOld(None)
 
 def load_config(ini_filepath: str):
-    config = Config(ini_filepath)
+    config = ConfigOld(ini_filepath)
 
 # def get_logger() -> logging.Logger: TODO: Figure out why this causes circular import error
 #     return logging.getLogger("app")
@@ -56,7 +56,7 @@ def run(ini_filepath: str | None):
     root.mainloop()
 
 class TranslationController:
-    def __init__(self, master: ctk.CTkFrame, config: Config, chunks: List[DocxChunk]):
+    def __init__(self, master: ctk.CTkFrame, config: ConfigOld, chunks: List[DocumentChunk]):
         master.grid_columnconfigure(0, weight=1)
         master.grid_columnconfigure(1, weight=0)
         master.grid_columnconfigure(2, weight=1)
@@ -89,8 +89,8 @@ class TranslationController:
         self._show_progressbar(True)
         # Get next untranslated chunk
         for chunk in self._chunks:
-            if chunk.state == DocxChunk.TranslationState.UNTRANSLATED:
-                logger.info("Found untranslated chunk: {}".format(string.take_multi(chunk.src_text_substrings, 24, "...").replace('\n', '¶')))
+            if chunk.state == DocumentChunk.TranslationState.UNTRANSLATED:
+                logger.info("Found untranslated chunk: {}".format(string.truncate_multi(chunk.src_text_substrings, 24, "...").replace('\n', '¶')))
                 asyncio.run(self._start_translation_internal(chunk, config))
                 
                 return
@@ -98,7 +98,7 @@ class TranslationController:
         #asyncio.run()
 
     @staticmethod
-    async def _start_translation_internal(chunk: DocxChunk, config: Config):
+    async def _start_translation_internal(chunk: DocumentChunk, config: ConfigOld):
         # Prepare LLM and prompt
         #llm = await MyLLMProvider().create_translator()
         translator_kwargs = config.translator_format_kwargs

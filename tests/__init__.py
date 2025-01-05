@@ -22,3 +22,4 @@ with open('config/log_settings_pytest.json') as log_settings_in:
     dictConfig(log_settings)
 
 pytest_log = getLogger('tests')
+pytest_log.info("%s Pytest session started. %s", "="*20, "="*20)
