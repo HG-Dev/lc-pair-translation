@@ -71,8 +71,19 @@ class DocumentChunk(BaseModel):
 
     @classmethod
     def from_full_src_row(cls, index: int, text: str) -> 'DocumentChunk':
-        """ Create a DocumentChunk from a list of rows. """
-        return cls(row_metadata=[RowMetadata(row_index=index, row_length=len(text))], state=TranslationState.UNTRANSLATED)
+        """ Create a DocumentChunk from a single row. """
+        if (text.strip() == ""):
+            raise ValueError("Cannot create a DocumentChunk from an empty row.")
+        
+        row_length = len(text)
+        start_col = 0
+        end_col = row_length
+        trimmed_text = text.strip()
+        if (len(trimmed_text) != row_length):
+            # Update the column range to reflect the trimmed text
+            start_col = text.index(trimmed_text)
+            end_col = start_col + len(trimmed_text)
+        return cls(row_metadata=[RowMetadata(row_index=index, row_length=row_length, col_range=(start_col, end_col))], state=TranslationState.UNTRANSLATED)
 
 
 class BaseDocumentChunks(BaseModel):
@@ -188,7 +199,7 @@ class BaseDocumentChunks(BaseModel):
     @classmethod
     def from_strings(cls, rows: list[str]) -> 'BaseDocumentChunks':
         """ Create a BaseDocumentChunks object from a list of strings. """
-        chunks = [DocumentChunk.from_full_src_row(row_index, row) for row_index, row in enumerate(rows)]
+        chunks = [DocumentChunk.from_full_src_row(row_index, row) for row_index, row in enumerate(rows) if row.strip() != ""]
         return cls(collection=chunks)
 
     def to_row_overrides_iter(self, row_getter: Callable[[int], str]) -> Iterator[tuple[RowMetadata, str]]:

@@ -37,14 +37,35 @@ class DocxChunkingTests(unittest.TestCase):
         pytest_log.info(f"Created chunks from 'wagahai.docx'; {len(chunks)} out of {len(doc.paragraphs)} paragraphs converted into chunks.")
         self.assertEqual(len(chunks), len(doc.paragraphs))
         for src_paragraph, chunk in zip(doc.paragraphs, chunks):
-            self.assertEqual(len(src_paragraph.text), len(chunk), "Chunk length does not match source paragraph length.")
+            self.assertEqual(len(src_paragraph.text.strip()), len(chunk), "Chunk length does not match source paragraph length.")
 
         config = Config().chunking
         chunks.merge_pass(config.min_length)
         chunks.split_pass(config.max_length, config.split_patterns)
-        pytest_log.debug("Refined chunks")
+        pytest_log.debug("Refined chunks: %d", len(chunks))
         for chunk in chunks:
             pytest_log.debug(f"({str(chunk)}), len={len(chunk)}: {chunk.to_text(chunks._get_row)}")
+
+        untranslated_exported_rows = [row for row in chunks.to_row_exports_iter()]
+        for (in_row, out_row) in zip(doc.paragraphs, untranslated_exported_rows):
+            self.assertEqual(in_row.text, out_row, "Untranslated row does not match source row.")
+
+    @unittest.skip("Needs source document")
+    def test_art_event(self):
+        """
+        Creates translateable chunks from the text of a tourism article.
+        """
+        chunks = DocxChunks.from_docx("tests/resources/art_event.docx")
+        doc = chunks.src
+        pytest_log.info(f"Created chunks from 'art_event.docx'; {len(chunks)} out of {len(doc.paragraphs)} paragraphs converted into chunks.")
+
+        config = Config().chunking
+        chunks.merge_pass(config.min_length)
+        chunks.split_pass(config.max_length, config.split_patterns)
+        pytest_log.debug("Refined chunks: %d", len(chunks))
+        for chunk in chunks:
+            text = chunk.to_text(chunks._get_row)
+            pytest_log.debug(f"({str(chunk)}), len={len(chunk)}/{len(text)} multiline={'\n' in text}: {chunk.to_text(chunks._get_row)}")
 
         untranslated_exported_rows = [row for row in chunks.to_row_exports_iter()]
         for (in_row, out_row) in zip(doc.paragraphs, untranslated_exported_rows):
