@@ -13,23 +13,15 @@ import langchain_pairtranslation.utils.string_extensions as string
 #from langchain_pairtranslation._internal import MyLLMProvider
 from langchain_pairtranslation.chunking.base import DocumentChunk
 from langchain_pairtranslation.chunking.docx import DocxChunks
-from langchain_pairtranslation.config_old import ConfigOld
+from langchain_pairtranslation.config import Config
 
-config: ConfigOld = ConfigOld(None)
+LOG = logging.getLogger("app")
 
-def load_config(ini_filepath: str):
-    config = ConfigOld(ini_filepath)
-
-# def get_logger() -> logging.Logger: TODO: Figure out why this causes circular import error
-#     return logging.getLogger("app")
-
-def run(ini_filepath: str | None):
-    if ini_filepath:
-        load_config(ini_filepath)
+def run(app_config: Config):
 
     root = ctk.CTk()
     root.title("LangChain Paired Translation")
-    root.geometry(config.window_size)
+    root.geometry(app_config.user.window_size)
     #root.iconbitmap('resoures/something.ico')
     ctk.FontManager.load_font('resources/fonts/RobotoMono-Regular.ttf')
     ctk.set_appearance_mode("dark")
@@ -44,19 +36,19 @@ def run(ini_filepath: str | None):
     text_frame = ChunkedTranslationFrame(root, bg_color="black", fg_color="black")
     text_frame.pack(side=TOP, fill=BOTH, expand=TRUE)
 
-    chunks = DocxChunks(doc_path="")
-
-    chunks.split_document()
+    chunks = DocxChunks.from_docx("tests/resources/wagahai.docx")
+    chunks.merge_pass(app_config.chunking.max_length)
+    chunks.split_pass(app_config.chunking.max_length, app_config.chunking.split_patterns)
 
     for chunk in chunks:
         text_frame.add_chunk(chunk)
 
-    ctrls = TranslationController(ctrl_frame, config, text_frame._chunks)
+    ctrls = TranslationController(ctrl_frame, app_config, text_frame._chunks)
 
     root.mainloop()
 
 class TranslationController:
-    def __init__(self, master: ctk.CTkFrame, config: ConfigOld, chunks: List[DocumentChunk]):
+    def __init__(self, master: ctk.CTkFrame, config: Config, chunks: List[DocumentChunk]):
         master.grid_columnconfigure(0, weight=1)
         master.grid_columnconfigure(1, weight=0)
         master.grid_columnconfigure(2, weight=1)
@@ -98,11 +90,11 @@ class TranslationController:
         #asyncio.run()
 
     @staticmethod
-    async def _start_translation_internal(chunk: DocumentChunk, config: ConfigOld):
+    async def _start_translation_internal(chunk: DocumentChunk, config: Config):
         # Prepare LLM and prompt
         #llm = await MyLLMProvider().create_translator()
-        translator_kwargs = config.translator_format_kwargs
-        sysprompt = config.translator_base_system_prompt
+        #translator_kwargs = config.translator_format_kwargs
+        sysprompt = config.system_prompt_path
         # terms = [
         #     DocumentTerm(source="in", translations=["out"], description="DO NOT SAVE THIS"),
         # ]

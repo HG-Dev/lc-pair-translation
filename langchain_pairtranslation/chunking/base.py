@@ -3,8 +3,9 @@ from typing import Callable, Iterator
 from pydantic import BaseModel, PositiveInt, Field
 
 from langchain_pairtranslation.config import SplitPattern
-from langchain_pairtranslation.rowinfo import Adjacency, RowMetadata
+from langchain_pairtranslation.rowinfo import Adjacency, ParagraphSpan
 from langchain_pairtranslation.translation_state import TranslationState
+from re import compile, Pattern
 
 from logging import getLogger
 LOG = getLogger('app')
@@ -15,7 +16,7 @@ class DocumentChunk(BaseModel):
     Chunks can be any length, depending on what's used to break the document into chunks.
     This implies a need to direct translation services to generate output one portion at a time for each individual chunk.
     """
-    row_metadata: list[RowMetadata] = Field(
+    paragraph_metadata: list[ParagraphSpan] = Field(
         description="A contiguous series of row metadata detailing rows in the source document.",
         frozen=True
     )
@@ -31,29 +32,29 @@ class DocumentChunk(BaseModel):
     def to_text(self, row_getter: Callable[[int], str]) -> str:
         """ Get the text of all rows in the chunk from the associated document. """
         rows = []
-        for metadata in self.row_metadata:
-            rows.append(row_getter(metadata.row_index)[metadata.start_col:metadata.end_col])
+        for metadata in self.paragraph_metadata:
+            rows.append(row_getter(metadata.src_index)[metadata.start:metadata.end])
         
         return "\n".join(rows)
     
-    def to_rows(self, row_getter: Callable[[int], str]) -> Iterator[tuple[RowMetadata, str]]:
+    def to_paragraphs(self, row_getter: Callable[[int], str]) -> Iterator[tuple[ParagraphSpan, str]]:
         """ Get the text from each row in the chunk from the associated document, as well as their metadata. """
-        for metadata in self.row_metadata:
-            yield metadata, row_getter(metadata.row_index)[metadata.start_col:metadata.end_col]
+        for metadata in self.paragraph_metadata:
+            yield metadata, row_getter(metadata.src_index)[metadata.start:metadata.end]
 
     @property
-    def start(self) -> RowMetadata:
-        return self.row_metadata[0]
+    def start(self) -> ParagraphSpan:
+        return self.paragraph_metadata[0]
     
     @property
-    def end(self) -> RowMetadata:
-        return self.row_metadata[-1]
+    def end(self) -> ParagraphSpan:
+        return self.paragraph_metadata[-1]
     
     def __str__(self) -> str:
         return f"DocumentChunk: {str(self.start)} to {str(self.end)}"
     
-    def __iter__(self) -> Iterator[RowMetadata]:
-        return iter(self.row_metadata)
+    def __iter__(self) -> Iterator[ParagraphSpan]:
+        return iter(self.paragraph_metadata)
     
     def eval_adjacency(self, other: 'DocumentChunk') -> Adjacency:
         """ Determine if this chunk is adjacent to another chunk. """
@@ -65,25 +66,17 @@ class DocumentChunk(BaseModel):
         return Adjacency.NONE
 
     def __len__(self) -> int:
-        lengths = [row.length for row in self.row_metadata]
+        lengths = [row.length for row in self.paragraph_metadata]
         assert(all([length >= 0 for length in lengths]))
         return sum(lengths)
 
     @classmethod
-    def from_full_src_row(cls, index: int, text: str) -> 'DocumentChunk':
+    def from_single_paragraph(cls, index: int, text: str) -> 'DocumentChunk':
         """ Create a DocumentChunk from a single row. """
         if (text.strip() == ""):
             raise ValueError("Cannot create a DocumentChunk from an empty row.")
         
-        row_length = len(text)
-        start_col = 0
-        end_col = row_length
-        trimmed_text = text.strip()
-        if (len(trimmed_text) != row_length):
-            # Update the column range to reflect the trimmed text
-            start_col = text.index(trimmed_text)
-            end_col = start_col + len(trimmed_text)
-        return cls(row_metadata=[RowMetadata(row_index=index, row_length=row_length, col_range=(start_col, end_col))], state=TranslationState.UNTRANSLATED)
+        return cls(paragraph_metadata=[ParagraphSpan.from_single_paragraph(index, text)], state=TranslationState.UNTRANSLATED)
 
 
 class BaseDocumentChunks(BaseModel):
@@ -119,7 +112,7 @@ class BaseDocumentChunks(BaseModel):
         current_chunk = self.collection[0]
         for chunk in self.collection[1:]:
             if current_chunk.eval_adjacency(chunk) == Adjacency.FORWARD and len(current_chunk) + len(chunk) <= max_length:
-                current_chunk.row_metadata.extend(chunk.row_metadata)
+                current_chunk.paragraph_metadata.extend(chunk.paragraph_metadata)
             else:
                 merged_chunks.append(current_chunk)
                 current_chunk = chunk
@@ -142,31 +135,31 @@ class BaseDocumentChunks(BaseModel):
         
         assert(row_getter is not None)
         assert(splitters is not None)
-        chunk_rows = chunk.row_metadata
+        chunk_rows = chunk.paragraph_metadata
         split_chunks = []
         next_chunk_metadata = []
         next_chunk_length = 0
-        LOG.debug("Starting split of chunk with %d rows", len(chunk.row_metadata))
+        LOG.debug("Starting split of chunk with %d rows", len(chunk.paragraph_metadata))
         while chunk_rows: # Digest all rows in chunk
             
-            row_metadata = chunk_rows.pop(0)
-            LOG.debug("Processing row %s (%s)", str(row_metadata), row_metadata.to_text(row_getter(row_metadata.row_index)))
+            paragraph_metadata = chunk_rows.pop(0)
+            LOG.debug("Processing row %s (%s)", str(paragraph_metadata), paragraph_metadata.to_text(row_getter(paragraph_metadata.src_index)))
 
             # Remerge rows into the next chunk while max length has not been exceeded
-            if next_chunk_length + row_metadata.length <= max_length:
-                LOG.debug("Row #%d placed in split chunk #%d", row_metadata.row_index, len(split_chunks))
-                next_chunk_metadata.append(row_metadata)
-                next_chunk_length += row_metadata.length
+            if next_chunk_length + paragraph_metadata.length <= max_length:
+                LOG.debug("Row #%d placed in split chunk #%d", paragraph_metadata.src_index, len(split_chunks))
+                next_chunk_metadata.append(paragraph_metadata)
+                next_chunk_length += paragraph_metadata.length
                 continue
 
             # max length has been exceeded; find the first splitter that can split row text
-            row_text = row_getter(row_metadata.row_index)
+            row_text = row_getter(paragraph_metadata.src_index)
             LOG.debug("Splitting row")
             for splitter in splitters:
                 LOG.debug("Trying splitter <%s>", splitter.name)
                 # Find all potential splits that do not exceed maximum length for this chunk
-                potential_splits = [pair for pair in row_metadata.splititer(row_text, splitter) 
-                                    if pair[0].end_col - row_metadata.start_col + next_chunk_length <= max_length]
+                potential_splits = [pair for pair in paragraph_metadata.splititer(row_text, splitter) 
+                                    if pair[0].end - paragraph_metadata.start + next_chunk_length <= max_length]
                 if not potential_splits:
                     continue
                 
@@ -174,67 +167,67 @@ class BaseDocumentChunks(BaseModel):
                 lhs, rhs = potential_splits[-1]
                 next_chunk_metadata.append(lhs) # Finish off the current chunk
                 LOG.debug("LHS = %s", lhs.to_text(row_text))
-                split_chunks.append(DocumentChunk(row_metadata=next_chunk_metadata))
+                split_chunks.append(DocumentChunk(paragraph_metadata=next_chunk_metadata))
 
                 next_chunk_metadata = [] # Start a new chunk
                 LOG.debug("RHS = %s", rhs.to_text(row_text))
                 next_chunk_length = 0
                 chunk_rows.insert(0, rhs) # Reinsert the row that was split to confirm property length
 
-                row_metadata = None
+                paragraph_metadata = None
                 break
             
             # If splitting failed, create a new chunk with the current row anyway
             # and add a warning to the chunk
-            if row_metadata:
-                LOG.warning("Max length (%d) exceeded on unsplittable row section %s", max_length, str(row_metadata))
-                split_chunks.append(DocumentChunk(row_metadata=[row_metadata], warnings=[f"Max length ({max_length}) exceeded"]))
+            if paragraph_metadata:
+                LOG.warning("Max length (%d) exceeded on unsplittable row section %s", max_length, str(paragraph_metadata))
+                split_chunks.append(DocumentChunk(paragraph_metadata=[paragraph_metadata], warnings=[f"Max length ({max_length}) exceeded"]))
 
         if next_chunk_metadata:
-            split_chunks.append(DocumentChunk(row_metadata=next_chunk_metadata))
+            split_chunks.append(DocumentChunk(paragraph_metadata=next_chunk_metadata))
 
         LOG.debug("Chunk was split into %d smaller chunks", len(split_chunks))
         return split_chunks
         
     @classmethod
-    def from_strings(cls, rows: list[str]) -> 'BaseDocumentChunks':
+    def from_paragraphs(cls, paragraphs: list[str]) -> 'BaseDocumentChunks':
         """ Create a BaseDocumentChunks object from a list of strings. """
-        chunks = [DocumentChunk.from_full_src_row(row_index, row) for row_index, row in enumerate(rows) if row.strip() != ""]
+        chunks = [DocumentChunk.from_single_paragraph(pindex, ptext) for pindex, ptext in enumerate(paragraphs) if ptext.strip() != ""]
         return cls(collection=chunks)
 
-    def to_row_overrides_iter(self, row_getter: Callable[[int], str]) -> Iterator[tuple[RowMetadata, str]]:
+    def to_paragraph_overrides_iter(self, src_getter: Callable[[int], str]) -> Iterator[tuple[ParagraphSpan, str]]:
         """ Get the text of all rows in the chunk from the associated document. """
         for chunk in self.collection:
-            for row in chunk.to_rows(row_getter):
+            for row in chunk.to_paragraphs(src_getter):
                 yield row
 
-    def to_row_exports_iter(self, row_getter: Callable[[int], str], total_rows: int) -> Iterator[str]:
+    def to_paragraph_exports_iter(self, src_getter: Callable[[int], str], total_rows: int) -> Iterator[str]:
         """ Get the text of all rows in the chunk from the associated document. """
-        override_dict: dict[int, list[RowMetadata]] = {}
+        override_dict: dict[int, list[ParagraphSpan]] = {}
         for chunk in self.collection:
-            for row_overrides in chunk:
-                overrides = override_dict.get(row_overrides.row_index, [])
-                overrides.append(row_overrides)
-                override_dict[row_overrides.row_index] = overrides
+            for paragraph_overrides in chunk:
+                overrides = override_dict.get(paragraph_overrides.src_index, [])
+                overrides.append(paragraph_overrides)
+                override_dict[paragraph_overrides.src_index] = overrides
 
         # For each row in the document, return each row with overrides applied
-        for row_index in range(total_rows):
-            row_overrides = override_dict.get(row_index, [])
-            src_row_text = row_getter(row_index)
-            final_row_text = ""
+        for pindex in range(total_rows):
+            paragraph_overrides = override_dict.get(pindex, [])
+            src_text = src_getter(pindex)
+            final_paragraph_text = ""
             insertion_point = 0
 
-            for override in row_overrides:
+            for override in paragraph_overrides:
                 # Copy text from the source row up to the start of the override
-                if override.start_col > insertion_point:
-                    final_row_text += src_row_text[insertion_point:override.start_col]
+                if override.start > insertion_point:
+                    final_paragraph_text += src_text[insertion_point:override.start]
 
                 # Copy the override text
-                final_row_text += override.to_text(src_row_text)
+                final_paragraph_text += override.to_text(src_text)
 
                 # Update the insertion point
-                insertion_point = override.end_col
+                insertion_point = override.end
 
-            if insertion_point < len(src_row_text):
-                final_row_text += src_row_text[insertion_point:]
-            yield final_row_text
+            if insertion_point < len(src_text):
+                final_paragraph_text += src_text[insertion_point:]
+            yield final_paragraph_text

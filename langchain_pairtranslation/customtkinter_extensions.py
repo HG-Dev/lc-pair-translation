@@ -3,7 +3,7 @@ from tkinter.constants import *
 from customtkinter.windows.widgets.theme import ThemeManager
 from customtkinter.windows.widgets.utility import check_kwargs_empty, pop_from_dict_by_set
 
-from .chunking.base import DocumentChunk
+from langchain_pairtranslation.chunking.base import DocumentChunk
 from .rowinfo import RowCol
 import customtkinter as ctk
 import tkinter as tk
@@ -312,18 +312,12 @@ class ChunkFrame(ctk.CTkFrame):
     fontsize = ThemeManager.theme["CTkFont"]["size"]
     status_colors = ["red", "blue", "cyan", "green"]
 
-    def __init__(self, master, chunk: Any):
+    def __init__(self, master, chunk: DocumentChunk):
         super().__init__(master)
         self.grid_columnconfigure(0, weight=0, minsize=32)
         self.grid_columnconfigure(1, weight=1, minsize=550)
         self.grid_columnconfigure(2, weight=1, minsize=550)
         self.pack(side=TOP, pady=6)
-
-        try:
-            assert(chunk.is_src_set)
-        except AssertionError:
-            print("Chunk recieved by ChunkFrame is missing its src link!")
-            return
         
         start = chunk.start_rowcol
         total_rows = chunk.ref_paragraph_count + 2

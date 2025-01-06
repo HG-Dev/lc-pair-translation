@@ -1,11 +1,13 @@
 from enum import Enum
-import re
+from re import compile, Pattern
 from typing import Iterator
 from pydantic import BaseModel, Field, PositiveInt, field_validator
 from functools import total_ordering
 
 from langchain_pairtranslation.config import SplitBehavior, SplitPattern
 from .utils.unsigned_int import UnsignedInt
+
+NEWLINE_PATTERN: Pattern = compile(r"\n|\r")
 
 class Adjacency(Enum):
     """ Enum for determining sequence adjacency. """
@@ -68,71 +70,77 @@ class RowCol(BaseModel):
         """Check if the coordinate is within the given bounds."""
         return 0 <= self.row < max_row and 0 <= self.column < max_column
     
-class RowMetadata(BaseModel):
+class ParagraphSpan(BaseModel):
     """
     ### Summary
-    Metadata defining a portion of a row in a document.
-    Row index and row length cannot be changed after initialization.
+    Metadata defining a portion of a paragraph in a document.
+    Index and char_count cannot be changed after initialization.
     ### Attributes
-    1. row_index : PositiveInt recording the row index in the original document.
-    2. row_length : PositiveInt describing the length of the row.
-    3. col_range : UnsignedInt tuple describing the row content range from to [0] to [1] exclusive.
+    1. src_index : UnsignedInt recording the paragraph index in the original document.
+    2. src_length : UnsignedInt describing the length of the paragraph in the original document.
+    3. src_breaks : List of UnsignedInt describing the character indices of line breaks in the paragraph.
+    3. char_range : UnsignedInt tuple describing the content range from to [0] to [1] exclusive.
     """
-    row_index: UnsignedInt = Field(frozen=True)
-    row_length: UnsignedInt = Field(frozen=True)
-    col_range: tuple[UnsignedInt, UnsignedInt] = Field(default_factory=lambda data: (0, data['row_length']))
+    src_index: UnsignedInt = Field(frozen=True)
+    src_length: UnsignedInt = Field(frozen=True)
+    src_breaks: list[UnsignedInt] = Field(frozen=True)
+    char_range: tuple[UnsignedInt, UnsignedInt] = Field(default_factory=lambda data: (0, data['src_length']))
 
-    @field_validator('col_range')
+    @field_validator('char_range')
     def check_col_range(cls, rng: tuple[UnsignedInt, UnsignedInt]):
-        if rng[0] > rng[1]: raise ValueError('The first element must be less than or equal to the second element')
+        if rng[0] >= rng[1]: raise ValueError('The span start must be less than the end.')
         return rng
 
     def __len__(self) -> UnsignedInt:
-        return self.length
+        return self.src_length
     
     def __str__(self) -> str:
-        return f"Row {self.row_index}[{self.start_col}:{self.end_col}]"
+        return f"Row {self.src_index}[{self.start}:{self.end}]"
 
     @property
     def length(self) -> UnsignedInt:
-        assert(isinstance(self.col_range, tuple))
-        assert(self.end_col >= self.start_col)
-        assert(self.end_col - self.start_col >= 0)
-        return (self.end_col - self.start_col)
+        assert(isinstance(self.char_range, tuple))
+        assert(self.end >= self.start)
+        assert(self.end - self.start >= 0)
+        return (self.end - self.start)
     
     @property
-    def start_col(self):
-        return self.col_range[0]
+    def start(self):
+        return self.char_range[0]
     
     @property
-    def end_col(self):
-        return self.col_range[1]
+    def end(self):
+        return self.char_range[1]
     
     @property
-    def is_row_start(self) -> bool:
-        return self.col_range[0] == 0
+    def lines(self):
+        return len([br_idx for br_idx in self.src_breaks if (br_idx >= self.start and br_idx < self.end)])
     
     @property
-    def is_row_end(self) -> bool:
-        return self.col_range[1] == self.row_length
+    def is_paragraph_start(self) -> bool:
+        return self.char_range[0] == 0
     
-    def eval_adjacency(self, other: 'RowMetadata') -> Adjacency:
+    @property
+    def is_paragraph_end(self) -> bool:
+        return self.char_range[1] == self.src_length
+    
+    def eval_adjacency(self, other: 'ParagraphSpan') -> Adjacency:
 
-        if self.row_index == other.row_index:
-            if self.end_col == other.start_col:
+        if self.src_index == other.src_index:
+            if self.end == other.start:
                 return Adjacency.FORWARD
-            if self.start_col == other.end_col:
+            if self.start == other.end:
                 return Adjacency.BACKWARD
-            if self.col_range == other.col_range:
+            if self.char_range == other.char_range:
                 return Adjacency.IDENTICAL
-            if self._ranges_overlap(self.col_range, other.col_range):
+            if self._ranges_overlap(self.char_range, other.char_range):
                 return Adjacency.OVERLAPPING
         
         # This segment ends a row; precedes the other
-        if other.row_index - self.row_index == 1 and self.is_row_end and other.is_row_start:
+        if other.src_index - self.src_index == 1 and self.is_paragraph_end and other.is_paragraph_start:
             return Adjacency.FORWARD
         # This segment starts a row; succeeds the other
-        if self.row_index - other.row_index == 1 and self.is_row_start and other.is_row_end:
+        if self.src_index - other.src_index == 1 and self.is_paragraph_start and other.is_paragraph_end:
             return Adjacency.BACKWARD
         
         return Adjacency.NONE
@@ -150,24 +158,37 @@ class RowMetadata(BaseModel):
     def to_text(self, src_row : str) -> str:
         """ Slices the source row to return the text within the column range. """
         try:
-            assert(len(src_row) == self.row_length)
+            assert(len(src_row) == self.src_length)
         except AssertionError:
-            print(f"Row length mismatch: {len(src_row)} != {self.row_length}  row text: {src_row}")
+            print(f"Row length mismatch: {len(src_row)} != {self.src_length}  row text: {src_row}")
             raise
-        return src_row[self.start_col : self.end_col]
+        return src_row[self.start : self.end]
     
     @classmethod
-    def from_enumerated_rows(cls, rows: Iterator[tuple[int, str]]) -> Iterator['RowMetadata']:
-        for row_index, row in rows:
-            row_length = len(row)
-            yield cls(row_index=row_index, row_length=row_length, col_range=(0, row_length))
+    def from_single_paragraph(cls, src_index: int, src_text: str) -> 'ParagraphSpan':
+        src_length = len(src_text)
+        src_breaks = [br.start() for br in NEWLINE_PATTERN.finditer(src_text)]
+        start = 0
+        end = src_length
+        trimmed_text = src_text.strip()
+        if (len(trimmed_text) != src_length):
+            # Update the span to reflect the trimmed text
+            start = src_text.index(trimmed_text)
+            end = start + len(trimmed_text)
+
+        return cls(src_index=src_index, src_length=src_length, src_breaks=src_breaks, char_range=(start, end))
+
+    @classmethod
+    def from_enumerated_paragraphs(cls, paragraphs: Iterator[tuple[int, str]]) -> Iterator['ParagraphSpan']:
+        for paragraph_index, paragraph_text in paragraphs:
+            yield cls.from_single_paragraph(paragraph_index, paragraph_text)
     
-    def splititer(self, row_src: str, splitter: SplitPattern) -> Iterator[tuple['RowMetadata', 'RowMetadata']]:
+    def splititer(self, src_text: str, splitter: SplitPattern) -> Iterator[tuple['ParagraphSpan', 'ParagraphSpan']]:
         """
         ### Summary
         Return all potential split pairs created from applying a given split pattern to this row metadata.
         """
-        matches = [match for match in splitter.pattern.finditer(row_src) if self._range_includes(self.col_range, match.span())]
+        matches = [match for match in splitter.pattern.finditer(src_text) if self._range_includes(self.char_range, match.span())]
         for match in matches:
             # Define the border of the split to be the start and end of the pattern match
             split_start, split_end = match.span()
@@ -178,15 +199,9 @@ class RowMetadata(BaseModel):
                 if (SplitBehavior.INCLUDE_RIGHT in splitter.behavior):
                     split_end = match.start(-1)
 
-            left = RowMetadata(row_index=self.row_index, row_length=self.row_length, col_range=(self.col_range[0], split_start))
-            right = RowMetadata(row_index=self.row_index, row_length=self.row_length, col_range=(split_end, self.col_range[1]))
+            left = ParagraphSpan(src_index=self.src_index, src_length=self.src_length, 
+                                 src_breaks=self.src_breaks, char_range=(self.char_range[0], split_start))
+            right = ParagraphSpan(src_index=self.src_index, src_length=self.src_length, 
+                                  src_breaks=self.src_breaks, char_range=(split_end, self.char_range[1]))
             yield left, right
         
-
-        
-
-        
-    #     start, end = match.span()
-    #     left = RowMetadata(row_index=self.row_index, col_range=(self.col_start, start))
-    #     right = RowMetadata(row_index=self.row_index, col_range=(end, self.col_end))
-    #     return left, right

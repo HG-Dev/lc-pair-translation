@@ -46,7 +46,7 @@ class DocxChunkingTests(unittest.TestCase):
         for chunk in chunks:
             pytest_log.debug(f"({str(chunk)}), len={len(chunk)}: {chunk.to_text(chunks._get_row)}")
 
-        untranslated_exported_rows = [row for row in chunks.to_row_exports_iter()]
+        untranslated_exported_rows = [row for row in chunks.to_paragraph_exports_iter()]
         for (in_row, out_row) in zip(doc.paragraphs, untranslated_exported_rows):
             self.assertEqual(in_row.text, out_row, "Untranslated row does not match source row.")
 
@@ -67,7 +67,7 @@ class DocxChunkingTests(unittest.TestCase):
             text = chunk.to_text(chunks._get_row)
             pytest_log.debug(f"({str(chunk)}), len={len(chunk)}/{len(text)} multiline={'\n' in text}: {chunk.to_text(chunks._get_row)}")
 
-        untranslated_exported_rows = [row for row in chunks.to_row_exports_iter()]
+        untranslated_exported_rows = [row for row in chunks.to_paragraph_exports_iter()]
         for (in_row, out_row) in zip(doc.paragraphs, untranslated_exported_rows):
             self.assertEqual(in_row.text, out_row, "Untranslated row does not match source row.")
 

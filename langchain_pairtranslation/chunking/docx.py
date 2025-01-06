@@ -8,7 +8,7 @@ from re import Pattern
 from pydantic import BaseModel, Field, PrivateAttr, PositiveInt
 from langchain_pairtranslation.chunking.base import BaseDocumentChunks
 from langchain_pairtranslation.config import SplitPattern, SplitBehavior
-from langchain_pairtranslation.rowinfo import RowCol, RowMetadata
+from langchain_pairtranslation.rowinfo import RowCol, ParagraphSpan
 from langchain_pairtranslation.translation_state import TranslationState
 LOG = logging.getLogger('app')
 
@@ -26,7 +26,7 @@ class DocxChunks(BaseDocumentChunks):
     def from_docx(cls, doc_path: str) -> 'DocxChunks':
         open_document = docx.Document(doc_path)
         raw_strings = [paragraph.text for paragraph in open_document.paragraphs]
-        chunks = BaseDocumentChunks.from_strings(raw_strings)
+        chunks = BaseDocumentChunks.from_paragraphs(raw_strings)
         instance = cls(doc_path=doc_path, collection=chunks)
         instance.src = open_document
         return instance
@@ -37,10 +37,10 @@ class DocxChunks(BaseDocumentChunks):
     def split_pass(self, max_length: int, splitters: list[SplitPattern]) -> None:
         super().split_pass(self._get_row, max_length, splitters)
     
-    def to_row_overrides_iter(self) -> Iterator[tuple[RowMetadata, str]]:
+    def to_paragraph_overrides_iter(self) -> Iterator[tuple[ParagraphSpan, str]]:
         for chunk in self.collection:
-            for row in chunk.to_rows(self._get_row):
+            for row in chunk.to_paragraphs(self._get_row):
                 yield row
 
-    def to_row_exports_iter(self) -> Iterator[str]:
-        return super().to_row_exports_iter(self._get_row, len(self.src.paragraphs))
+    def to_paragraph_exports_iter(self) -> Iterator[str]:
+        return super().to_paragraph_exports_iter(self._get_row, len(self.src.paragraphs))

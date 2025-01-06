@@ -147,16 +147,24 @@ class Config(BaseModel):
     """
     chunking: ChunkingSettings = ChunkingSettings()
     user: UserSettings = UserSettings()
+    system_prompt_path: str = "config/prompts/translator_system_prompt.json"
+
+    @staticmethod
+    def _create_default(path: str) -> 'Config':
+        default = Config()
+        default.save(path)
+        return default
 
     @staticmethod
     def load(path: str) -> 'Config':
         if not exists(path):
-            default = Config()
-            default.save(path)
-            return default
+            return Config._create_default(path)
         
         with open(path, 'r') as file:
-            return Config.model_validate_json(file.read())
+            json = file.read()
+            if (json.strip() == ""):
+                return Config._create_default(path)
+            return Config.model_validate_json(json)
         
     def save(self, path: str):
         with open(path, 'w') as file:

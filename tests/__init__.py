@@ -1,7 +1,6 @@
 import json
 from logging import getLogger
 from logging.config import dictConfig
-from langchain_pairtranslation import load_config
 from os import path, mkdir
 
 # Configure logging

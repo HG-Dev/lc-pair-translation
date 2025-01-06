@@ -5,6 +5,8 @@ from logging import getLogger
 from logging.config import dictConfig
 from os import path, mkdir
 
+from langchain_pairtranslation.config import Config
+
 if __name__ == '__main__':
     # Configure logging for application
     with open('config/log_settings.json') as log_settings_in:
@@ -24,6 +26,8 @@ if __name__ == '__main__':
                     print("Error preparing logging directories.\n" + dirpath + ": " + str(e))
         dictConfig(log_settings)
 
+    app_settings = Config.load('config/app_settings.json')
+
     # Run the application
     getLogger('app').info("Application started.")
-    run('config/app_settings.ini')
+    run(app_settings)
